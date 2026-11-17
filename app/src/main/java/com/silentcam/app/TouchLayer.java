@@ -99,6 +99,10 @@ public class TouchLayer extends View {
 
     public boolean isLocked() { return locked; }
 
+    /** 손가락이 화면에 닿아 있는 동안 true */
+    public boolean isTouching() { return touching; }
+    private boolean touching = false;
+
     public void setGrid(boolean on) { gridOn = on; invalidate(); }
 
     public void setSizeText(String s) { sizeText = s; invalidate(); }
@@ -152,6 +156,8 @@ public class TouchLayer extends View {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         scaler.onTouchEvent(e);
+        int am = e.getActionMasked();
+        touching = !(am == MotionEvent.ACTION_UP || am == MotionEvent.ACTION_CANCEL);
         float x = e.getX(), y = e.getY();
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:

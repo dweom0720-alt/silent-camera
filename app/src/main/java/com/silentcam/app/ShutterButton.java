@@ -28,6 +28,8 @@ public class ShutterButton extends View {
 
     public void setState(int s) { state = s; invalidate(); }
 
+    public void setPressedLook(boolean p) { pressed = p; invalidate(); }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         int a = e.getActionMasked();

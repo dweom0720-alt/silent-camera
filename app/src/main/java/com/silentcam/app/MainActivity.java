@@ -25,6 +25,8 @@ import android.util.Size;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.ViewConfiguration;
 import android.view.OrientationEventListener;
 import android.view.Surface;
 import android.view.View;
@@ -122,6 +124,13 @@ public class MainActivity extends AppCompatActivity {
     private SeekBar zoomBar;
     private TextView zoomLabel;
     private boolean zoomDragging = false;
+    // 자동 범위 맞춤
+    private TextView autoBtn;
+    private boolean autoTrack = false;
+    private boolean autoBusy = false;
+    // 셔터 위치 옮기기
+    private View shutterSlot;
+    private boolean shutterDragging = false;
     private ImageView thumb;
     private ShutterButton shutter;
     private TextView flipBtn;
@@ -286,6 +295,25 @@ public class MainActivity extends AppCompatActivity {
         zl.topMargin = px(40);
         frame.addView(zoomText, zl);
 
+        autoBtn = chip("⌖ 자동맞춤");
+        autoBtn.setTextSize(13);
+        GradientDrawable ab = new GradientDrawable();
+        ab.setColor(0x99000000);
+        ab.setCornerRadius(px(18));
+        autoBtn.setBackground(ab);
+        autoBtn.setPadding(px(12), px(8), px(12), px(8));
+        frame.addView(autoBtn, new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT));
+        autoBtn.setOnClickListener(v -> {
+            if (autoTrack) { setAutoTrack(false); return; }
+            if (touch.isLocked()) { showToast("범위 고정을 먼저 풀어주세요"); return; }
+            autoFitOnce(true);
+        });
+        autoBtn.setOnLongClickListener(v -> {
+            if (touch.isLocked()) { showToast("범위 고정을 먼저 풀어주세요"); return true; }
+            setAutoTrack(!autoTrack);
+            return true;
+        });
+
         root.addView(frame, new FrameLayout.LayoutParams(-1, -1));
 
         previewView.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> {
@@ -362,6 +390,7 @@ public class MainActivity extends AppCompatActivity {
         lockBtn.setOnClickListener(v -> {
             boolean l = !touch.isLocked();
             touch.setLocked(l);
+            if (l && autoTrack) setAutoTrack(false);
             prefs.edit().putBoolean("lock", l).apply();
             refreshTop();
             showToast(l ? "범위가 고정되었습니다" : "범위를 움직일 수 있습니다");
@@ -439,7 +468,7 @@ public class MainActivity extends AppCompatActivity {
         rotatables.add(thumb);
 
         shutter = new ShutterButton(this);
-        shutter.setOnClickListener(v -> onShutter());
+
 
         flipBtn = chip("⟲");
         flipBtn.setTextSize(26);
@@ -458,13 +487,18 @@ public class MainActivity extends AppCompatActivity {
         controls.addView(spacers[0]);
         controls.addView(thumb, new LinearLayout.LayoutParams(px(52), px(52)));
         controls.addView(spacers[1]);
-        controls.addView(shutter, new LinearLayout.LayoutParams(px(80), px(80)));
+        shutterSlot = new View(this);
+        controls.addView(shutterSlot, new LinearLayout.LayoutParams(px(80), px(80)));
         controls.addView(spacers[2]);
         controls.addView(flipBtn, new LinearLayout.LayoutParams(px(52), px(52)));
         controls.addView(spacers[3]);
         bottom.addView(controls);
 
         root.addView(bottom, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        // 셔터는 맨 위에 떠 있고, 길게 눌러 원하는 곳으로 옮길 수 있음
+        root.addView(shutter, new FrameLayout.LayoutParams(px(80), px(80), Gravity.TOP | Gravity.LEFT));
+        setupShutterDrag();
+        root.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> root.post(this::placeShutter));
         buildZoomPanel();
         applyLayout();
 
@@ -489,7 +523,10 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
-            public void onRectChanged(RectF n) { saveRect(n); }
+            public void onRectChanged(RectF n) {
+                saveRect(n);
+                if (autoTrack) setAutoTrack(false); // 손으로 고치면 자동 추적은 멈춤
+            }
         });
 
         refreshMode();
@@ -539,6 +576,8 @@ public class MainActivity extends AppCompatActivity {
             t.setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         }
         touch.setRectMode(mode == MODE_RANGE);
+        autoBtn.setVisibility(mode == MODE_RANGE ? View.VISIBLE : View.GONE);
+        if (mode != MODE_RANGE && autoTrack) setAutoTrack(false);
         shutter.setState(mode == MODE_VIDEO ? ShutterButton.VIDEO
                 : mode == MODE_RANGE ? ShutterButton.RANGE : ShutterButton.PHOTO);
     }
@@ -735,6 +774,150 @@ public class MainActivity extends AppCompatActivity {
 
     private final Runnable hideZoom = () -> zoomText.setVisibility(View.GONE);
 
+    // ───────────── 자동 범위 맞춤 ─────────────
+
+    private void setAutoTrack(boolean on) {
+        autoTrack = on;
+        autoBtn.setText(on ? "⌖ 자동추적 중" : "⌖ 자동맞춤");
+        autoBtn.setTextColor(on ? 0xFFFFD54F : Color.WHITE);
+        ui.removeCallbacks(trackTick);
+        if (on) { showToast("문서·화면을 계속 따라갑니다 (누르면 멈춤)"); ui.post(trackTick); }
+    }
+
+    private final Runnable trackTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!autoTrack || mode != MODE_RANGE) return;
+            if (!touch.isTouching() && !counting && !touch.isLocked()) autoFitOnce(false);
+            ui.postDelayed(this, 500);
+        }
+    };
+
+    /** 지금 미리보기에서 문서·모니터 화면을 찾아 범위를 맞춤 */
+    private void autoFitOnce(boolean manual) {
+        if (autoBusy) return;
+        Bitmap b = previewView.getBitmap();
+        if (b == null) { if (manual) showToast("화면 준비 중입니다"); return; }
+        autoBusy = true;
+        worker.execute(() -> {
+            RectF r = null;
+            try { r = AutoRect.detect(b); } catch (Throwable ignored) { }
+            b.recycle();
+            final RectF found = r;
+            ui.post(() -> {
+                autoBusy = false;
+                if (mode != MODE_RANGE || touch.isLocked() || touch.isTouching()) return;
+                if (found == null) { if (manual) showToast("문서·화면을 찾지 못했습니다. 조금 떨어져 다시 해보세요"); return; }
+                RectF cur = touch.getNormalizedRect();
+                RectF next = found;
+                if (!manual) { // 계속 따라갈 때는 부드럽게
+                    float k = 0.5f;
+                    next = new RectF(cur.left + (found.left - cur.left) * k, cur.top + (found.top - cur.top) * k,
+                            cur.right + (found.right - cur.right) * k, cur.bottom + (found.bottom - cur.bottom) * k);
+                }
+                touch.setNormalizedRect(next);
+                saveRect(next);
+                if (manual) showToast("범위를 맞췄습니다 (길게 누르면 계속 따라감)");
+            });
+        });
+    }
+
+    // ───────────── 셔터 위치 옮기기 ─────────────
+
+    private String shutterKey() { return wide ? "shW" : "shN"; }
+
+    /** 셔터를 저장된 위치(없으면 원래 자리)에 놓기 */
+    private void placeShutter() {
+        if (shutterDragging || root.getWidth() == 0) return;
+        float cx, cy;
+        float sx = prefs.getFloat(shutterKey() + "x", -1), sy = prefs.getFloat(shutterKey() + "y", -1);
+        if (sx >= 0 && sy >= 0) {
+            cx = sx * root.getWidth();
+            cy = sy * root.getHeight();
+        } else {
+            float[] c = slotCenter();
+            cx = c[0];
+            cy = c[1];
+        }
+        float half = px(40);
+        shutter.setTranslationX(clamp(cx, half, root.getWidth() - half) - half);
+        shutter.setTranslationY(clamp(cy, half, root.getHeight() - half) - half);
+    }
+
+    private float[] slotCenter() {
+        int[] a = new int[2], b = new int[2];
+        shutterSlot.getLocationInWindow(a);
+        root.getLocationInWindow(b);
+        return new float[]{a[0] - b[0] + shutterSlot.getWidth() / 2f, a[1] - b[1] + shutterSlot.getHeight() / 2f};
+    }
+
+    private static float clamp(float v, float lo, float hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void setupShutterDrag() {
+        final int slop = ViewConfiguration.get(this).getScaledTouchSlop();
+        final float[] down = new float[4]; // rawX, rawY, transX, transY
+        final boolean[] moved = {false};
+        final Runnable longPress = () -> {
+            shutterDragging = true;
+            shutter.setPressedLook(false);
+            shutter.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            shutter.animate().scaleX(1.15f).scaleY(1.15f).setDuration(120).start();
+            showToast("원하는 곳으로 끌어 놓으세요 (원래 자리에 놓으면 복귀)");
+        };
+        shutter.setOnTouchListener((v, e) -> {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    down[0] = e.getRawX(); down[1] = e.getRawY();
+                    down[2] = shutter.getTranslationX(); down[3] = shutter.getTranslationY();
+                    moved[0] = false;
+                    shutter.setPressedLook(true);
+                    ui.postDelayed(longPress, 450);
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = e.getRawX() - down[0], dy = e.getRawY() - down[1];
+                    if (Math.abs(dx) > slop || Math.abs(dy) > slop) moved[0] = true;
+                    if (shutterDragging) {
+                        float half = px(40);
+                        shutter.setTranslationX(clamp(down[2] + dx, 0, root.getWidth() - 2 * half));
+                        shutter.setTranslationY(clamp(down[3] + dy, 0, root.getHeight() - 2 * half));
+                    } else if (moved[0]) {
+                        ui.removeCallbacks(longPress);
+                        shutter.setPressedLook(false);
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                    ui.removeCallbacks(longPress);
+                    shutter.setPressedLook(false);
+                    if (shutterDragging) {
+                        shutterDragging = false;
+                        shutter.animate().scaleX(1f).scaleY(1f).setDuration(120).start();
+                        float half = px(40);
+                        float cx = shutter.getTranslationX() + half, cy = shutter.getTranslationY() + half;
+                        float[] slot = slotCenter();
+                        if (Math.hypot(cx - slot[0], cy - slot[1]) < px(60)) {
+                            prefs.edit().remove(shutterKey() + "x").remove(shutterKey() + "y").apply();
+                            showToast("셔터를 원래 자리로 돌렸습니다");
+                        } else {
+                            prefs.edit().putFloat(shutterKey() + "x", cx / root.getWidth())
+                                    .putFloat(shutterKey() + "y", cy / root.getHeight()).apply();
+                        }
+                        placeShutter();
+                    } else if (!moved[0]) {
+                        onShutter();
+                    }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    ui.removeCallbacks(longPress);
+                    shutter.setPressedLook(false);
+                    if (shutterDragging) { shutterDragging = false; shutter.setScaleX(1f); shutter.setScaleY(1f); placeShutter(); }
+                    return true;
+            }
+            return false;
+        });
+    }
+
     // ───────────── 펼친 화면(폴드 안쪽 화면) 배치 ─────────────
 
     @Override
@@ -787,11 +970,16 @@ public class MainActivity extends AppCompatActivity {
             bottom.updateViewLayout(controls, new LinearLayout.LayoutParams(-1, px(90)));
             for (View sp : spacers) controls.updateViewLayout(sp, new LinearLayout.LayoutParams(0, 1, 1));
         }
+        FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
+        al.leftMargin = px(10);
+        al.topMargin = wide ? px(62) : px(10);
+        frame.updateViewLayout(autoBtn, al);
         root.updateViewLayout(frame, fl);
         root.updateViewLayout(topBar, tl);
         root.updateViewLayout(bottom, bl);
         if (camera != null) buildZoomButtons();
         hideZoomPanel.run();
+        root.post(this::placeShutter);
     }
 
     // ───────────── 미세 줌 막대 ─────────────
