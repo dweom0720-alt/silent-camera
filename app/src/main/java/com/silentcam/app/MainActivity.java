@@ -34,6 +34,8 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
+import android.content.res.Configuration;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -112,7 +114,14 @@ public class MainActivity extends AppCompatActivity {
     private View blink;
     private TextView countdown, recTime, toastText, zoomText;
     private TextView flashBtn, timerBtn, ratioBtn, gridBtn, lockBtn, resetBtn;
-    private LinearLayout zoomRow, modeRow;
+    private LinearLayout zoomRow, modeRow, topBar, bottom, controls;
+    private View[] spacers;
+    private boolean wide = false;
+    // 미세 줌 막대
+    private LinearLayout zoomPanel;
+    private SeekBar zoomBar;
+    private TextView zoomLabel;
+    private boolean zoomDragging = false;
     private ImageView thumb;
     private ShutterButton shutter;
     private TextView flipBtn;
@@ -277,9 +286,7 @@ public class MainActivity extends AppCompatActivity {
         zl.topMargin = px(40);
         frame.addView(zoomText, zl);
 
-        FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(-1, -1, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        fl.topMargin = px(52);
-        root.addView(frame, fl);
+        root.addView(frame, new FrameLayout.LayoutParams(-1, -1));
 
         previewView.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> {
             int w = r - l, h = bt - t;
@@ -291,6 +298,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 위쪽 버튼 줄
         LinearLayout top = new LinearLayout(this);
+        topBar = top;
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(px(6), 0, px(6), 0);
         flashBtn = chip("");
@@ -392,14 +400,14 @@ public class MainActivity extends AppCompatActivity {
         root.addView(toastText, tl);
 
         // 아래쪽 영역
-        LinearLayout bottom = new LinearLayout(this);
+        bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
         bottom.setBackgroundColor(0x55000000);
         bottom.setPadding(0, px(6), 0, px(18));
 
         zoomRow = new LinearLayout(this);
         zoomRow.setGravity(Gravity.CENTER);
-        bottom.addView(zoomRow, new LinearLayout.LayoutParams(-1, px(48)));
+        bottom.addView(zoomRow);
 
         modeRow = new LinearLayout(this);
         modeRow.setGravity(Gravity.CENTER);
@@ -411,10 +419,10 @@ public class MainActivity extends AppCompatActivity {
             t.setOnClickListener(v -> setMode(m));
             modeRow.addView(t);
         }
-        bottom.addView(modeRow, new LinearLayout.LayoutParams(-1, px(44)));
+        bottom.addView(modeRow);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
+        controls = new LinearLayout(this);
+        controls.setGravity(Gravity.CENTER);
         thumb = new ImageView(this);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
         GradientDrawable tbg = new GradientDrawable();
@@ -446,16 +454,19 @@ public class MainActivity extends AppCompatActivity {
         });
         rotatables.add(flipBtn);
 
-        controls.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        spacers = new View[]{new View(this), new View(this), new View(this), new View(this)};
+        controls.addView(spacers[0]);
         controls.addView(thumb, new LinearLayout.LayoutParams(px(52), px(52)));
-        controls.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        controls.addView(spacers[1]);
         controls.addView(shutter, new LinearLayout.LayoutParams(px(80), px(80)));
-        controls.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        controls.addView(spacers[2]);
         controls.addView(flipBtn, new LinearLayout.LayoutParams(px(52), px(52)));
-        controls.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        bottom.addView(controls, new LinearLayout.LayoutParams(-1, px(90)));
+        controls.addView(spacers[3]);
+        bottom.addView(controls);
 
         root.addView(bottom, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        buildZoomPanel();
+        applyLayout();
 
         touch.setListener(new TouchLayer.Listener() {
             @Override
@@ -467,6 +478,7 @@ public class MainActivity extends AppCompatActivity {
                 ZoomState z = camera.getCameraInfo().getZoomState().getValue();
                 if (z == null) return;
                 setZoom(z.getZoomRatio() * f);
+                if (zoomPanel.getVisibility() == View.VISIBLE) keepZoomPanel();
             }
 
             @Override
@@ -674,9 +686,16 @@ public class MainActivity extends AppCompatActivity {
             bg.setShape(GradientDrawable.OVAL);
             bg.setColor(0x66000000);
             t.setBackground(bg);
-            t.setOnClickListener(v -> setZoom(s));
+            t.setOnClickListener(v -> {
+                ZoomState cz = camera != null ? camera.getCameraInfo().getZoomState().getValue() : null;
+                // 지금 선택된 배율을 한 번 더 누르면 미세 조절 막대 열기
+                if (cz != null && Math.abs(cz.getZoomRatio() - s) < 0.05f) showZoomPanel();
+                else setZoom(s);
+            });
+            t.setOnLongClickListener(v -> { showZoomPanel(); return true; });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(40), px(40));
-            lp.leftMargin = lp.rightMargin = px(6);
+            if (wide) lp.topMargin = lp.bottomMargin = px(5);
+            else lp.leftMargin = lp.rightMargin = px(6);
             zoomRow.addView(t, lp);
         }
     }
@@ -687,6 +706,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void highlightZoom(float cur) {
+        syncZoomBar(cur);
         int best = -1;
         for (int i = 0; i < zoomSteps.size(); i++) {
             float s = zoomSteps.get(i);
@@ -714,6 +734,186 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private final Runnable hideZoom = () -> zoomText.setVisibility(View.GONE);
+
+    // ───────────── 펼친 화면(폴드 안쪽 화면) 배치 ─────────────
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration c) {
+        super.onConfigurationChanged(c);
+        applyLayout();
+    }
+
+    /** 화면이 넓으면(폴드 펼침) 미리보기를 세로 꽉 채우고 버튼은 오른쪽 세로줄로 */
+    private void applyLayout() {
+        Configuration c = getResources().getConfiguration();
+        wide = c.screenWidthDp > c.screenHeightDp * 0.72f;
+        int side = px(124);
+        FrameLayout.LayoutParams fl, tl, bl;
+        if (wide) {
+            fl = new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER);
+            fl.rightMargin = side;
+            tl = new FrameLayout.LayoutParams(-1, px(52), Gravity.TOP);
+            tl.rightMargin = side;
+            topBar.setBackgroundColor(0x55000000);
+            bl = new FrameLayout.LayoutParams(side, -1, Gravity.RIGHT);
+            bottom.setOrientation(LinearLayout.VERTICAL);
+            bottom.setGravity(Gravity.CENTER);
+            bottom.setPadding(0, px(8), 0, px(8));
+            bottom.setBackgroundColor(0xFF000000);
+            zoomRow.setOrientation(LinearLayout.VERTICAL);
+            modeRow.setOrientation(LinearLayout.VERTICAL);
+            controls.setOrientation(LinearLayout.VERTICAL);
+            bottom.updateViewLayout(zoomRow, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-1, -2);
+            ml.topMargin = ml.bottomMargin = px(8);
+            bottom.updateViewLayout(modeRow, ml);
+            bottom.updateViewLayout(controls, new LinearLayout.LayoutParams(-1, px(300)));
+            for (View sp : spacers) controls.updateViewLayout(sp, new LinearLayout.LayoutParams(1, 0, 1));
+        } else {
+            fl = new FrameLayout.LayoutParams(-1, -1, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            fl.topMargin = px(52);
+            tl = new FrameLayout.LayoutParams(-1, px(52), Gravity.TOP);
+            topBar.setBackgroundColor(0);
+            bl = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+            bottom.setOrientation(LinearLayout.VERTICAL);
+            bottom.setGravity(Gravity.NO_GRAVITY);
+            bottom.setPadding(0, px(6), 0, px(18));
+            bottom.setBackgroundColor(0x55000000);
+            zoomRow.setOrientation(LinearLayout.HORIZONTAL);
+            modeRow.setOrientation(LinearLayout.HORIZONTAL);
+            controls.setOrientation(LinearLayout.HORIZONTAL);
+            bottom.updateViewLayout(zoomRow, new LinearLayout.LayoutParams(-1, px(48)));
+            bottom.updateViewLayout(modeRow, new LinearLayout.LayoutParams(-1, px(44)));
+            bottom.updateViewLayout(controls, new LinearLayout.LayoutParams(-1, px(90)));
+            for (View sp : spacers) controls.updateViewLayout(sp, new LinearLayout.LayoutParams(0, 1, 1));
+        }
+        root.updateViewLayout(frame, fl);
+        root.updateViewLayout(topBar, tl);
+        root.updateViewLayout(bottom, bl);
+        if (camera != null) buildZoomButtons();
+        hideZoomPanel.run();
+    }
+
+    // ───────────── 미세 줌 막대 ─────────────
+
+    private void buildZoomPanel() {
+        zoomPanel = new LinearLayout(this);
+        zoomPanel.setGravity(Gravity.CENTER_VERTICAL);
+        zoomPanel.setPadding(px(6), px(2), px(6), px(2));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xB3000000);
+        bg.setCornerRadius(px(24));
+        zoomPanel.setBackground(bg);
+        TextView minus = chip("−");
+        minus.setTextSize(22);
+        TextView plus = chip("+");
+        plus.setTextSize(22);
+        zoomBar = new SeekBar(this);
+        zoomBar.setMax(1000);
+        zoomLabel = chip("1.0x");
+        zoomLabel.setTextSize(14);
+        zoomLabel.setMinWidth(px(56));
+        zoomPanel.addView(minus, new LinearLayout.LayoutParams(px(44), px(44)));
+        zoomPanel.addView(zoomBar, new LinearLayout.LayoutParams(0, px(44), 1));
+        zoomPanel.addView(plus, new LinearLayout.LayoutParams(px(44), px(44)));
+        zoomPanel.addView(zoomLabel, new LinearLayout.LayoutParams(-2, px(44)));
+        zoomPanel.setVisibility(View.GONE);
+        root.addView(zoomPanel, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+
+        minus.setOnClickListener(v -> stepZoom(-1));
+        plus.setOnClickListener(v -> stepZoom(1));
+        zoomBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar b, int p, boolean user) {
+                if (!user) return;
+                float r = barToRatio(p);
+                if (camera != null) camera.getCameraControl().setZoomRatio(r);
+                zoomLabel.setText(String.format(Locale.US, "%.2fx", r));
+                keepZoomPanel();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar b) { zoomDragging = true; keepZoomPanel(); }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar b) { zoomDragging = false; keepZoomPanel(); }
+        });
+    }
+
+    private float[] zoomRange() {
+        ZoomState z = camera != null ? camera.getCameraInfo().getZoomState().getValue() : null;
+        float min = z != null ? z.getMinZoomRatio() : 1f;
+        float max = z != null ? Math.min(z.getMaxZoomRatio(), 30f) : 1f;
+        if (max <= min) max = min + 0.01f;
+        return new float[]{min, max};
+    }
+
+    /** 막대 위치 → 배율 (배율이 낮은 쪽은 촘촘하게) */
+    private float barToRatio(int p) {
+        float[] r = zoomRange();
+        return (float) (r[0] * Math.pow(r[1] / r[0], p / 1000.0));
+    }
+
+    private int ratioToBar(float ratio) {
+        float[] r = zoomRange();
+        double v = Math.log(ratio / r[0]) / Math.log(r[1] / r[0]) * 1000;
+        return (int) Math.max(0, Math.min(1000, Math.round(v)));
+    }
+
+    /** −/+ 버튼: 0.1배씩 (10배 넘으면 0.5배씩) */
+    private void stepZoom(int dir) {
+        if (camera == null) return;
+        ZoomState z = camera.getCameraInfo().getZoomState().getValue();
+        if (z == null) return;
+        float cur = z.getZoomRatio();
+        float step = cur >= 10f ? 0.5f : 0.1f;
+        float next = Math.round((cur + dir * step) / step) * step;
+        float[] r = zoomRange();
+        next = Math.max(r[0], Math.min(r[1], next));
+        camera.getCameraControl().setZoomRatio(next);
+        zoomLabel.setText(String.format(Locale.US, "%.2fx", next));
+        zoomBar.setProgress(ratioToBar(next));
+        keepZoomPanel();
+    }
+
+    private void syncZoomBar(float cur) {
+        if (zoomPanel == null || zoomPanel.getVisibility() != View.VISIBLE || zoomDragging) return;
+        zoomBar.setProgress(ratioToBar(cur));
+        zoomLabel.setText(String.format(Locale.US, "%.2fx", cur));
+    }
+
+    private void showZoomPanel() {
+        if (camera == null) return;
+        FrameLayout.LayoutParams lp;
+        if (wide) {
+            int w = Math.min(frame.getWidth() - px(32), px(520));
+            lp = new FrameLayout.LayoutParams(w, -2, Gravity.BOTTOM | Gravity.LEFT);
+            lp.leftMargin = frame.getLeft() + (frame.getWidth() - w) / 2;
+            lp.bottomMargin = px(24);
+        } else {
+            lp = new FrameLayout.LayoutParams(Math.min(root.getWidth() - px(24), px(480)), -2,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            lp.bottomMargin = bottom.getHeight() + px(8);
+        }
+        root.updateViewLayout(zoomPanel, lp);
+        zoomPanel.setVisibility(View.VISIBLE);
+        zoomPanel.bringToFront();
+        ZoomState z = camera.getCameraInfo().getZoomState().getValue();
+        float cur = z != null ? z.getZoomRatio() : 1f;
+        zoomBar.setProgress(ratioToBar(cur));
+        zoomLabel.setText(String.format(Locale.US, "%.2fx", cur));
+        keepZoomPanel();
+    }
+
+    private void keepZoomPanel() {
+        ui.removeCallbacks(hideZoomPanel);
+        ui.postDelayed(hideZoomPanel, 4000);
+    }
+
+    private final Runnable hideZoomPanel = () -> {
+        if (zoomDragging) { keepZoomPanel(); return; }
+        if (zoomPanel != null) zoomPanel.setVisibility(View.GONE);
+    };
 
     private void focusAt(float x, float y) {
         if (camera == null) return;
