@@ -56,5 +56,7 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:${camerax}"
     implementation "androidx.camera:camera-view:${camerax}"
     implementation "androidx.camera:camera-video:${camerax}"
+    // 삼성 카메라의 자체 화질 처리(HDR·야간·자동 보정)를 빌려 쓰는 기능
+    implementation "androidx.camera:camera-extensions:${camerax}"
     implementation 'com.google.guava:listenablefuture:1.0'
 }

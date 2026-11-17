@@ -51,6 +51,8 @@ import androidx.camera.core.UseCaseGroup;
 import androidx.camera.core.ViewPort;
 import androidx.camera.core.ZoomState;
 import androidx.camera.core.resolutionselector.AspectRatioStrategy;
+import androidx.camera.extensions.ExtensionMode;
+import androidx.camera.extensions.ExtensionsManager;
 import androidx.camera.core.resolutionselector.ResolutionSelector;
 import androidx.camera.core.resolutionselector.ResolutionStrategy;
 import androidx.camera.lifecycle.ProcessCameraProvider;
@@ -118,6 +120,14 @@ public class MainActivity extends AppCompatActivity {
 
     // 카메라
     private ProcessCameraProvider provider;
+    private ExtensionsManager extensions;
+    // 화질 보정: 삼성 카메라 내부 처리(자동·HDR·야간) 사용
+    private static final int[] EXT_MODES = {ExtensionMode.AUTO, ExtensionMode.HDR, ExtensionMode.NIGHT, ExtensionMode.NONE};
+    private static final String[] EXT_NAMES = {"화질 자동", "화질 HDR", "화질 야간", "보정 끔"};
+    private int extIdx = 0;
+    private int extActive = ExtensionMode.NONE;
+    private boolean extBroken = false;
+    private TextView extBtn;
     private Camera camera;
     private Preview preview;
     private ImageCapture imageCapture;
@@ -149,6 +159,7 @@ public class MainActivity extends AppCompatActivity {
         ratioIdx = prefs.getInt("ratio", 0);
         flashIdx = prefs.getInt("flash", 0);
         timerIdx = prefs.getInt("timer", 0);
+        extIdx = prefs.getInt("ext", 0);
         String lu = prefs.getString("lastUri", null);
         if (lu != null) { lastUri = Uri.parse(lu); lastMime = prefs.getString("lastMime", "image/jpeg"); }
 
@@ -222,7 +233,7 @@ public class MainActivity extends AppCompatActivity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextColor(Color.WHITE);
-        t.setTextSize(13);
+        t.setTextSize(12);
         t.setGravity(Gravity.CENTER);
         t.setPadding(px(10), px(6), px(10), px(6));
         return t;
@@ -286,9 +297,10 @@ public class MainActivity extends AppCompatActivity {
         timerBtn = chip("");
         ratioBtn = chip("");
         gridBtn = chip("격자");
+        extBtn = chip("");
         lockBtn = chip("🔓 범위");
         resetBtn = chip("↺ 범위");
-        for (TextView t : new TextView[]{flashBtn, timerBtn, ratioBtn, gridBtn, lockBtn, resetBtn}) {
+        for (TextView t : new TextView[]{extBtn, flashBtn, timerBtn, ratioBtn, gridBtn, lockBtn, resetBtn}) {
             top.addView(t, new LinearLayout.LayoutParams(0, -1, 1));
             rotatables.add(t);
         }
@@ -304,6 +316,20 @@ public class MainActivity extends AppCompatActivity {
                 if (imageCapture != null) imageCapture.setFlashMode(flashMode());
             }
             refreshTop();
+        });
+        extBtn.setOnClickListener(v -> {
+            if (mode == MODE_VIDEO || extensions == null) return;
+            CameraSelector base = front ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA;
+            for (int k = 1; k <= EXT_MODES.length; k++) { // 이 폰에서 되는 다음 모드로
+                int n = (extIdx + k) % EXT_MODES.length;
+                if (EXT_MODES[n] == ExtensionMode.NONE || extensions.isExtensionAvailable(base, EXT_MODES[n])) {
+                    extIdx = n;
+                    break;
+                }
+            }
+            prefs.edit().putInt("ext", extIdx).apply();
+            extBroken = false;
+            bindCamera();
         });
         timerBtn.setOnClickListener(v -> {
             timerIdx = (timerIdx + 1) % TIMERS.length;
@@ -473,6 +499,16 @@ public class MainActivity extends AppCompatActivity {
         else flashBtn.setText(FLASH_NAMES[flashIdx]);
         timerBtn.setText(TIMERS[timerIdx] == 0 ? "타이머 끔" : "타이머 " + TIMERS[timerIdx] + "초");
         ratioBtn.setText(mode == MODE_VIDEO ? "9:16" : RATIO_NAMES[ratioIdx]);
+        if (mode == MODE_VIDEO) { extBtn.setText("보정 -"); extBtn.setAlpha(0.4f); }
+        else if (extensions == null) { extBtn.setText("보정 확인중"); extBtn.setAlpha(0.4f); }
+        else if (extActive == ExtensionMode.NONE) {
+            extBtn.setText(EXT_MODES[extIdx] == ExtensionMode.NONE ? "보정 끔" : "보정 미지원");
+            extBtn.setAlpha(1f);
+        } else {
+            extBtn.setText(EXT_NAMES[extIdx]);
+            extBtn.setAlpha(1f);
+        }
+        extBtn.setTextColor(extActive != ExtensionMode.NONE ? 0xFFFFD54F : Color.WHITE);
         ratioBtn.setAlpha(mode == MODE_VIDEO ? 0.4f : 1f);
         boolean g = prefs.getBoolean("grid", false);
         gridBtn.setTextColor(g ? 0xFFFFD54F : Color.WHITE);
@@ -524,7 +560,11 @@ public class MainActivity extends AppCompatActivity {
         f.addListener(() -> {
             try {
                 provider = f.get();
-                bindCamera();
+                ListenableFuture<ExtensionsManager> ef = ExtensionsManager.getInstanceAsync(this, provider);
+                ef.addListener(() -> {
+                    try { extensions = ef.get(); } catch (Exception ignored) { extensions = null; }
+                    bindCamera();
+                }, ContextCompat.getMainExecutor(this));
             } catch (Exception e) {
                 Toast.makeText(this, "카메라를 열 수 없습니다: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
@@ -548,6 +588,21 @@ public class MainActivity extends AppCompatActivity {
         videoCapture = null;
 
         CameraSelector sel = front ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA;
+        extActive = ExtensionMode.NONE;
+        if (mode != MODE_VIDEO && extensions != null && !extBroken) {
+            int want = EXT_MODES[extIdx];
+            int[] tryList = want == ExtensionMode.NONE ? new int[0]
+                    : new int[]{want, ExtensionMode.AUTO, ExtensionMode.HDR};
+            for (int em : tryList) {
+                try {
+                    if (extensions.isExtensionAvailable(sel, em)) {
+                        sel = extensions.getExtensionEnabledCameraSelector(sel, em);
+                        extActive = em;
+                        break;
+                    }
+                } catch (Exception ignored) { }
+            }
+        }
         boolean wide = mode == MODE_VIDEO || ratioIdx == 1;
         AspectRatioStrategy ars = wide ? AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
                 : AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY;
@@ -576,6 +631,7 @@ public class MainActivity extends AppCompatActivity {
                                 .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
                                 .build())
                         .setFlashMode(flashMode())
+                        .setJpegQuality(100)
                         // 범위촬영은 화면 그대로(세로 기준)로 받아서 범위를 정확히 자른 뒤 돌린다
                         .setTargetRotation(mode == MODE_RANGE ? Surface.ROTATION_0 : surfaceRotation)
                         .build();
@@ -585,9 +641,15 @@ public class MainActivity extends AppCompatActivity {
                 camera = provider.bindToLifecycle(this, sel, g.build());
             }
         } catch (Exception e) {
+            if (extActive != ExtensionMode.NONE) { // 보정 모드로 안 열리면 보정 없이 다시
+                extBroken = true;
+                bindCamera();
+                return;
+            }
             Toast.makeText(this, "카메라 연결 실패: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
+        refreshTop();
         camera.getCameraInfo().getZoomState().removeObservers(this);
         buildZoomButtons();
         camera.getCameraInfo().getZoomState().observe(this, z -> highlightZoom(z.getZoomRatio()));
@@ -838,7 +900,7 @@ public class MainActivity extends AppCompatActivity {
         Uri uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
         if (uri == null) { out.recycle(); return null; }
         try (OutputStream os = cr.openOutputStream(uri)) {
-            out.compress(Bitmap.CompressFormat.JPEG, 95, os);
+            out.compress(Bitmap.CompressFormat.JPEG, 100, os);
         }
         out.recycle();
         ContentValues done = new ContentValues();
