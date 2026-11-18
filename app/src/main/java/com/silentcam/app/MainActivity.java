@@ -146,6 +146,7 @@ public class MainActivity extends AppCompatActivity {
     private int extActive = ExtensionMode.NONE;
     private boolean extBroken = false;
     private TextView extBtn;
+    private TextView pdfBtn;
     private Camera camera;
     private Preview preview;
     private ImageCapture imageCapture;
@@ -335,8 +336,9 @@ public class MainActivity extends AppCompatActivity {
         gridBtn = chip("격자");
         extBtn = chip("");
         lockBtn = chip("🔓 범위");
+        pdfBtn = chip("PDF");
         resetBtn = chip("↺ 범위");
-        for (TextView t : new TextView[]{extBtn, flashBtn, timerBtn, ratioBtn, gridBtn, lockBtn, resetBtn}) {
+        for (TextView t : new TextView[]{extBtn, flashBtn, timerBtn, ratioBtn, gridBtn, lockBtn, resetBtn, pdfBtn}) {
             top.addView(t, new LinearLayout.LayoutParams(0, -1, 1));
             rotatables.add(t);
         }
@@ -367,6 +369,7 @@ public class MainActivity extends AppCompatActivity {
             extBroken = false;
             bindCamera();
         });
+        pdfBtn.setOnClickListener(v -> openPdf());
         timerBtn.setOnClickListener(v -> {
             timerIdx = (timerIdx + 1) % TIMERS.length;
             prefs.edit().putInt("timer", timerIdx).apply();
@@ -465,6 +468,7 @@ public class MainActivity extends AppCompatActivity {
         });
         thumb.setClipToOutline(true);
         thumb.setOnClickListener(v -> openLast());
+        thumb.setOnLongClickListener(v -> { openPdf(); return true; });
         rotatables.add(thumb);
 
         shutter = new ShutterButton(this);
@@ -1361,6 +1365,11 @@ public class MainActivity extends AppCompatActivity {
                 ui.post(() -> thumb.setImageDrawable(null));
             }
         });
+    }
+
+    private void openPdf() {
+        if (recording != null) return;
+        startActivity(new Intent(this, PdfActivity.class));
     }
 
     private void openLast() {
