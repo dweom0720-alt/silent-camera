@@ -940,11 +940,12 @@ public class MainActivity extends AppCompatActivity {
         int W = root.getWidth(), H = root.getHeight(), bh = bottom.getHeight();
         if (wide) {
             // 펼친 화면: 오른쪽 버튼줄과 겹치지 않으면서 화면 전체 가운데
+            // 양옆 여백이 버튼줄 폭보다 넉넉하면 버튼줄을 피해 가운데,
+            // 아니면(1:1 등) 화면 전체 가운데에 두고 반투명 버튼줄이 위에 겹침 → 왼쪽 치우침 없음
             int side = px(124);
-            fl.rightMargin = side;
             if (W > 0 && H > 0) {
                 int fw = Math.round(H / frame.getRatio());
-                if (fw <= W - 2 * side) fl.leftMargin = side;
+                if (fw <= W - 2 * side) { fl.leftMargin = side; fl.rightMargin = side; }
             }
             return fl;
         }
@@ -985,7 +986,7 @@ public class MainActivity extends AppCompatActivity {
             bottom.setOrientation(LinearLayout.VERTICAL);
             bottom.setGravity(Gravity.CENTER);
             bottom.setPadding(0, px(8), 0, px(8));
-            bottom.setBackgroundColor(0xFF000000);
+            bottom.setBackgroundColor(0x66000000);
             zoomRow.setOrientation(LinearLayout.VERTICAL);
             modeRow.setOrientation(LinearLayout.VERTICAL);
             controls.setOrientation(LinearLayout.VERTICAL);
