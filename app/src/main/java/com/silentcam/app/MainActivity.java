@@ -380,6 +380,7 @@ public class MainActivity extends AppCompatActivity {
             ratioIdx = (ratioIdx + 1) % RATIOS.length;
             prefs.edit().putInt("ratio", ratioIdx).apply();
             frame.setRatio(RATIOS[ratioIdx]);
+            root.post(this::centerFrame);
             lastW = 0;
             refreshTop();
             bindCamera();
@@ -595,6 +596,7 @@ public class MainActivity extends AppCompatActivity {
         refreshMode();
         refreshTop();
         frame.setRatio(m == MODE_VIDEO ? RATIOS[1] : RATIOS[ratioIdx]);
+        root.post(this::centerFrame);
         if (videoChange || RATIOS[ratioIdx] != RATIOS[1]) lastW = 0;
         bindCamera();
     }
@@ -930,6 +932,34 @@ public class MainActivity extends AppCompatActivity {
         applyLayout();
     }
 
+    private boolean centerHooked = false;
+
+    /** 접은 화면: 미리보기를 위 막대와 아래 버튼 사이 가운데에 둠. 그 사이에 다 안 들어가면 화면 전체 가운데 */
+    private FrameLayout.LayoutParams centeredFrameParams() {
+        FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER);
+        int W = root.getWidth(), H = root.getHeight(), bh = bottom.getHeight();
+        if (W <= 0 || H <= 0) return fl;
+        int fh = Math.round(W * frame.getRatio());
+        int top = px(52);
+        if (fh <= H - top - bh) {
+            fl.topMargin = top;
+            fl.bottomMargin = bh;
+        }
+        return fl;
+    }
+
+    private void centerFrame() {
+        if (wide || root == null || frame == null) return;
+        FrameLayout.LayoutParams n = centeredFrameParams();
+        ViewGroup.LayoutParams o = frame.getLayoutParams();
+        if (o instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams c = (FrameLayout.LayoutParams) o;
+            if (c.gravity == n.gravity && c.topMargin == n.topMargin && c.bottomMargin == n.bottomMargin
+                    && c.rightMargin == n.rightMargin) return;
+        }
+        root.updateViewLayout(frame, n);
+    }
+
     /** 화면이 넓으면(폴드 펼침) 미리보기를 세로 꽉 채우고 버튼은 오른쪽 세로줄로 */
     private void applyLayout() {
         Configuration c = getResources().getConfiguration();
@@ -957,8 +987,7 @@ public class MainActivity extends AppCompatActivity {
             bottom.updateViewLayout(controls, new LinearLayout.LayoutParams(-1, px(300)));
             for (View sp : spacers) controls.updateViewLayout(sp, new LinearLayout.LayoutParams(1, 0, 1));
         } else {
-            fl = new FrameLayout.LayoutParams(-1, -1, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-            fl.topMargin = px(52);
+            fl = centeredFrameParams();
             tl = new FrameLayout.LayoutParams(-1, px(52), Gravity.TOP);
             topBar.setBackgroundColor(0);
             bl = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
@@ -981,6 +1010,13 @@ public class MainActivity extends AppCompatActivity {
         root.updateViewLayout(frame, fl);
         root.updateViewLayout(topBar, tl);
         root.updateViewLayout(bottom, bl);
+        if (!centerHooked) {
+            centerHooked = true;
+            bottom.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+                if (b - t != ob - ot) root.post(this::centerFrame);
+            });
+        }
+        root.post(this::centerFrame);
         if (camera != null) buildZoomButtons();
         hideZoomPanel.run();
         root.post(this::placeShutter);

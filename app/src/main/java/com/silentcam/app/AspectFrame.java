@@ -13,6 +13,8 @@ public class AspectFrame extends FrameLayout {
         if (r != ratio) { ratio = r; requestLayout(); }
     }
 
+    public float getRatio() { return ratio; }
+
     @Override
     protected void onMeasure(int wSpec, int hSpec) {
         int W = MeasureSpec.getSize(wSpec), H = MeasureSpec.getSize(hSpec);
