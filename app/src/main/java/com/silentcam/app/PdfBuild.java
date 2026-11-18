@@ -78,18 +78,28 @@ public final class PdfBuild {
         return r;
     }
 
-    private static boolean addPage(ContentResolver cr, Core.PdfWriter pw, Uri u, int level, boolean clean)
-            throws IOException {
+    /** 사진 정보 없이 보여 줄 쪽당 예상 크기(KB): 일반 A4 문서 사진 기준 */
+    public static final int[] TYPICAL_KB = {800, 300, 120, 60};
+    /** PDF 한 쪽에 붙는 머리글 등 고정 크기(바이트) */
+    private static final int PAGE_OVERHEAD = 320;
+
+    private static final class Page { byte[] data; int w, h; boolean bilevel; }
+
+    /** 사진 한 장을 압축 정도에 맞게 변환 (흑백문서는 압축 전 1비트 데이터) */
+    private static Page encode(ContentResolver cr, Uri u, int level, boolean clean) throws IOException {
         Bitmap bmp = decode(cr, u, LONG_SIDE[level]);
-        if (bmp == null) return false;
+        if (bmp == null) return null;
         int w = bmp.getWidth(), h = bmp.getHeight();
         int[] px = new int[w * h];
         bmp.getPixels(px, 0, w, 0, 0, w, h);
+        Page pg = new Page();
+        pg.w = w; pg.h = h;
 
         if (level == BW) {
             bmp.recycle();
-            pw.addBilevel(Core.binarize(Core.toGray(px), w, h), w, h);
-            return true;
+            pg.data = Core.binarize(Core.toGray(px), w, h);
+            pg.bilevel = true;
+            return pg;
         }
         if (level == SMALL) {
             int[] gray = Core.toGray(px);
@@ -104,8 +114,38 @@ public final class PdfBuild {
         ByteArrayOutputStream jpg = new ByteArrayOutputStream(256 * 1024);
         out.compress(Bitmap.CompressFormat.JPEG, QUALITY[level], jpg);
         out.recycle();
-        pw.addJpeg(jpg.toByteArray(), w, h);
+        pg.data = jpg.toByteArray();
+        return pg;
+    }
+
+    private static boolean addPage(ContentResolver cr, Core.PdfWriter pw, Uri u, int level, boolean clean)
+            throws IOException {
+        Page pg = encode(cr, u, level, clean);
+        if (pg == null) return false;
+        if (pg.bilevel) pw.addBilevel(pg.data, pg.w, pg.h);
+        else pw.addJpeg(pg.data, pg.w, pg.h);
         return true;
+    }
+
+    /** 고른 사진(최대 몇 장)을 실제로 압축해 보고 압축 정도별 쪽당 평균 크기(바이트)를 계산. 실패한 단계는 -1 */
+    public static long[] estimatePerPage(ContentResolver cr, List<Uri> samples, boolean clean) {
+        long[] r = new long[NAMES.length];
+        for (int l = 0; l < NAMES.length; l++) {
+            long sum = 0;
+            int n = 0;
+            for (Uri u : samples) {
+                if (Thread.currentThread().isInterrupted()) return null;
+                try {
+                    Page pg = encode(cr, u, l, clean && l != BW);
+                    if (pg == null) continue;
+                    long b = pg.bilevel ? Core.deflate(pg.data).length : pg.data.length;
+                    sum += b + PAGE_OVERHEAD;
+                    n++;
+                } catch (IOException | RuntimeException | OutOfMemoryError ignored) { }
+            }
+            r[l] = n == 0 ? -1 : sum / n;
+        }
+        return r;
     }
 
     /** 긴 변이 target 이하가 되도록 줄이고, 사진의 회전 정보대로 바로 세워서 읽기 */

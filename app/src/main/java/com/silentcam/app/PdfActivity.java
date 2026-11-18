@@ -47,6 +47,11 @@ public class PdfActivity extends AppCompatActivity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService thumbs = Executors.newFixedThreadPool(3);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService est = Executors.newSingleThreadExecutor();
+    private long[] perPage;        // 고른 사진으로 계산한 쪽당 크기(바이트), null이면 일반 문서 기준값
+    private String estKey = "";    // 마지막으로 계산한 사진·보정 조합
+    private int estGen = 0;
+    private boolean estimating = false;
     private final LruCache<Long, Bitmap> cache = new LruCache<Long, Bitmap>(24 * 1024 * 1024) {
         @Override
         protected int sizeOf(Long k, Bitmap b) { return b.getByteCount(); }
@@ -80,6 +85,7 @@ public class PdfActivity extends AppCompatActivity {
         super.onDestroy();
         thumbs.shutdownNow();
         worker.shutdown();
+        est.shutdownNow();
     }
 
     private int px(float v) { return Math.round(v * dp); }
@@ -177,6 +183,7 @@ public class PdfActivity extends AppCompatActivity {
         for (int i = 0; i < PdfBuild.NAMES.length; i++) {
             TextView t = chip(PdfBuild.NAMES[i]);
             t.setTextSize(13);
+            t.setPadding(px(4), px(6), px(4), px(6));
             final int l = i;
             t.setOnClickListener(v -> setLevel(l));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
@@ -196,7 +203,10 @@ public class PdfActivity extends AppCompatActivity {
         cleanBox.setTextColor(Color.WHITE);
         cleanBox.setChecked(getSharedPreferences("cam", MODE_PRIVATE).getBoolean("pdfClean", false));
         cleanBox.setOnCheckedChangeListener((c, on) ->
-                getSharedPreferences("cam", MODE_PRIVATE).edit().putBoolean("pdfClean", on).apply());
+        {
+                getSharedPreferences("cam", MODE_PRIVATE).edit().putBoolean("pdfClean", on).apply();
+                requestEstimate();
+        });
         bottom.addView(cleanBox);
         makeBtn = chip("");
         makeBtn.setTextSize(16);
@@ -216,7 +226,7 @@ public class PdfActivity extends AppCompatActivity {
         level = l;
         getSharedPreferences("cam", MODE_PRIVATE).edit().putInt("pdfLevel", l).apply();
         for (int i = 0; i < levelChips.length; i++) styleChip(levelChips[i], i == l);
-        levelDesc.setText(PdfBuild.DESC[l]);
+        refreshSizes();
         cleanBox.setEnabled(l != PdfBuild.BW);
         cleanBox.setAlpha(l == PdfBuild.BW ? 0.4f : 1f);
     }
@@ -295,6 +305,70 @@ public class PdfActivity extends AppCompatActivity {
         boolean allOn = !shown.isEmpty();
         for (Item it : shown) if (!picked.contains(it.id)) { allOn = false; break; }
         selectAllBtn.setText(allOn ? "선택 해제" : "전체 선택");
+        requestEstimate();
+    }
+
+    // ───────── 압축 정도별 예상 크기 ─────────
+
+    private long perPageBytes(int l) {
+        if (perPage != null && perPage[l] > 0) return perPage[l];
+        return PdfBuild.TYPICAL_KB[l] * 1024L;
+    }
+
+    /** 칩 아래 쪽당 크기, 설명 줄에 고른 장수 기준 예상 크기 표시 */
+    private void refreshSizes() {
+        if (levelChips == null || levelDesc == null) return;
+        for (int i = 0; i < levelChips.length; i++) {
+            levelChips[i].setText(PdfBuild.NAMES[i] + "\n쪽당 " + size(perPageBytes(i)));
+        }
+        int n = picked.size();
+        StringBuilder sb = new StringBuilder(PdfBuild.DESC[level]);
+        if (n == 0) {
+            sb.append("\n예상: 10장 약 ").append(size(perPageBytes(level) * 10 + 1024))
+              .append(" · 100장 약 ").append(size(perPageBytes(level) * 100 + 1024))
+              .append("\n(일반 문서 사진 기준 추정)");
+        } else {
+            sb.append("\n예상: ").append(n).append("장 약 ").append(size(perPageBytes(level) * n + 1024));
+            if (estimating) sb.append("\n(고른 사진으로 다시 계산 중…)");
+            else if (perPage != null) sb.append("\n(고른 사진 ").append(Math.min(2, n)).append("장을 실제 압축해 본 추정)");
+            else sb.append("\n(일반 문서 사진 기준 추정)");
+        }
+        levelDesc.setText(sb.toString());
+    }
+
+    /** 고른 사진 앞의 2장을 실제로 압축해 보고 쪽당 크기를 다시 계산 */
+    private void requestEstimate() {
+        if (cleanBox == null) return;
+        final boolean clean = cleanBox.isChecked();
+        List<Uri> samples = new ArrayList<>();
+        StringBuilder key = new StringBuilder(clean ? "c" : "n");
+        for (int i = 0; i < Math.min(2, picked.size()); i++) {
+            long id = picked.get(i);
+            key.append(',').append(id);
+            samples.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id));
+        }
+        String k = key.toString();
+        if (k.equals(estKey)) { refreshSizes(); return; }
+        estKey = k;
+        final int gen = ++estGen;
+        if (samples.isEmpty()) {
+            perPage = null;
+            estimating = false;
+            refreshSizes();
+            return;
+        }
+        estimating = true;
+        refreshSizes();
+        est.execute(() -> {
+            if (gen != estGen) return;
+            long[] r = PdfBuild.estimatePerPage(getContentResolver(), samples, clean);
+            ui.post(() -> {
+                if (gen != estGen) return;
+                estimating = false;
+                if (r != null) perPage = r;
+                refreshSizes();
+            });
+        });
     }
 
     // ───────── PDF 만들기 ─────────
