@@ -938,6 +938,16 @@ public class MainActivity extends AppCompatActivity {
     private FrameLayout.LayoutParams centeredFrameParams() {
         FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER);
         int W = root.getWidth(), H = root.getHeight(), bh = bottom.getHeight();
+        if (wide) {
+            // 펼친 화면: 오른쪽 버튼줄과 겹치지 않으면서 화면 전체 가운데
+            int side = px(124);
+            fl.rightMargin = side;
+            if (W > 0 && H > 0) {
+                int fw = Math.round(H / frame.getRatio());
+                if (fw <= W - 2 * side) fl.leftMargin = side;
+            }
+            return fl;
+        }
         if (W <= 0 || H <= 0) return fl;
         int fh = Math.round(W * frame.getRatio());
         int top = px(52);
@@ -949,13 +959,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void centerFrame() {
-        if (wide || root == null || frame == null) return;
+        if (root == null || frame == null) return;
         FrameLayout.LayoutParams n = centeredFrameParams();
         ViewGroup.LayoutParams o = frame.getLayoutParams();
         if (o instanceof FrameLayout.LayoutParams) {
             FrameLayout.LayoutParams c = (FrameLayout.LayoutParams) o;
             if (c.gravity == n.gravity && c.topMargin == n.topMargin && c.bottomMargin == n.bottomMargin
-                    && c.rightMargin == n.rightMargin) return;
+                    && c.rightMargin == n.rightMargin && c.leftMargin == n.leftMargin) return;
         }
         root.updateViewLayout(frame, n);
     }
@@ -967,8 +977,7 @@ public class MainActivity extends AppCompatActivity {
         int side = px(124);
         FrameLayout.LayoutParams fl, tl, bl;
         if (wide) {
-            fl = new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER);
-            fl.rightMargin = side;
+            fl = centeredFrameParams();
             tl = new FrameLayout.LayoutParams(-1, px(52), Gravity.TOP);
             tl.rightMargin = side;
             topBar.setBackgroundColor(0x55000000);
