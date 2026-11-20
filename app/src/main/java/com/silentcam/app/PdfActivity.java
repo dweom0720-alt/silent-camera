@@ -128,6 +128,16 @@ public class PdfActivity extends AppCompatActivity {
         selectAllBtn.setOnClickListener(v -> toggleAll());
         head.addView(back, new LinearLayout.LayoutParams(px(48), px(48)));
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView shrinkBtn = chip("PDF 줄이기");
+        GradientDrawable sg = new GradientDrawable();
+        sg.setCornerRadius(px(16));
+        sg.setColor(0xFF2F6BFF);
+        shrinkBtn.setBackground(sg);
+        shrinkBtn.setTextSize(13);
+        shrinkBtn.setOnClickListener(v -> startActivity(new android.content.Intent(this, PdfShrinkActivity.class)));
+        LinearLayout.LayoutParams shl = new LinearLayout.LayoutParams(-2, -2);
+        shl.rightMargin = px(6);
+        head.addView(shrinkBtn, shl);
         head.addView(selectAllBtn);
         title.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
         root.addView(head);
